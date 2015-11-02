@@ -26,13 +26,11 @@ defmodule ProjectedBuckets.GenBucket do
     updated_views = case Map.get(views, view_name) do
       nil -> views
       view = %{changes: change_streamer} ->
-        Logger.info "found view with change stream"
         updated_views = views |> Map.put(view_name, %{view | data: Map.put(view.data, key, value) })
         command = {:put, {key, value}}
         change_streamer |> GenEvent.notify(command)
         updated_views
       view ->
-        Logger.info "found view without change stream"
         views |> Map.put(view_name, %{view | data: Map.put(view.data, key, value) })
     end
     updated_state = %{state | views: updated_views}
@@ -73,11 +71,8 @@ defmodule ProjectedBuckets.GenBucket do
   defp begin_view_mapping(bucket, %{view_name: view_name, mapping_function: mapping_function}) do
     spawn_link fn ->
       stream_changes(bucket)
-        |> Stream.each(&IO.puts("about to map #{inspect &1} for view #{view_name}"))
         |> Stream.map(fn {:put, key_value} -> {:put, mapping_function.(key_value)} end)
-        |> Stream.each(&IO.puts("mapped to #{inspect &1} for view #{view_name}"))
         |> Stream.each(&update_view(bucket, view_name, &1))
-        |> Stream.each(&IO.puts("updated view #{view_name} with #{inspect &1}"))
         |> Stream.run
     end
   end
