@@ -12,6 +12,14 @@ defmodule ProjectedBuckets.GenBucketTests  do
       assert GenBucket.get(bucket, "foo") == 42
     end
 
+    test "Can create with a mapping function to map key / values when they are inserted" do
+      double_values = fn {key,value} -> {key,value * 2} end
+      {:ok, bucket} = GenBucket.start_link double_values
+
+      GenBucket.put(bucket, "foo", 42)
+      assert GenBucket.get(bucket, "foo") == 84
+    end
+
     test "stream_changes returns stream of bucket changes" do
       test_pid = self()
       {:ok, bucket} = GenBucket.start_link
@@ -34,5 +42,23 @@ defmodule ProjectedBuckets.GenBucketTests  do
       :timer.sleep(50)
       assert GenBucket.get(bucket, "doubled", "foo") == 84, "values inserted after view should be mapped"
       assert GenBucket.get(bucket, "doubled", "old") == 2, "original values should be mapped" #Tricky to do without there being a gap between getting full content and starting update stream
+    end
+
+
+    test "can install a another bucket process as a view" do
+      {:ok, master} = GenBucket.start_link
+
+      double_values = fn {key,value} -> {key,value * 2} end
+      {:ok, view_bucket} = GenBucket.start_link double_values
+
+      GenBucket.put(master, "old", 1)
+
+      GenBucket.install_view(master, "doubled", view_bucket)
+      :timer.sleep(50)
+
+      GenBucket.put(master, "foo", 42)
+      :timer.sleep(50)
+      assert GenBucket.get(view_bucket, "foo") == 84, "values inserted after view should be mapped, and accessable in view bucket"
+      assert GenBucket.get(view_bucket, "old") == 2, "original values should be mapped and accessable in view bucket" #Tricky to do without there being a gap between getting full content and starting update stream
     end
 end

@@ -8,6 +8,12 @@ defmodule ProjectedBuckets.GenBucket do
     GenServer.start_link __MODULE__, initial_state
   end
 
+  def start_link(mapping_function) do
+    {:ok, change_streamer} = GenEvent.start_link
+    initial_state = %{views: %{__primary: %{data: %{}, changes: change_streamer, mapping_function: mapping_function}}}
+    GenServer.start_link __MODULE__, initial_state
+  end
+
   def put(bucket, key, value) do
     update_view(bucket, :__primary, {:put, {key, value}})
   end
@@ -26,6 +32,7 @@ defmodule ProjectedBuckets.GenBucket do
     updated_views = case Map.get(views, view_name) do
       nil -> views
       view = %{changes: change_streamer} ->
+        {key, value} = run_through_mapping_function view, key, value
         updated_views = views |> Map.put(view_name, %{view | data: Map.put(view.data, key, value) })
         command = {:put, {key, value}}
         change_streamer |> GenEvent.notify(command)
@@ -61,11 +68,26 @@ defmodule ProjectedBuckets.GenBucket do
     end
   end
 
-  def handle_call({:install_view, {view_name, mapping_function}}, _from, state = %{views: views}) do
+  def handle_call({:install_view, {view_name, mapping_function}}, _from, state = %{views: views}) when is_function(mapping_function) do
     view = %{mapping_function: mapping_function, data: %{}}
     updated_views = views |> Map.put(view_name, view)
     begin_view_mapping(self(), view |> Map.put(:view_name, view_name))
     {:reply, :ok, %{state | views: updated_views}}
+  end
+
+  def handle_call({:install_view, {view_name, follower}}, _from, state = %{views: views}) do
+    view = %{following_process: follower}
+    updated_views = views |> Map.put(view_name, view)
+    begin_view_mapping(self(), view |> Map.put(:view_name, view_name))
+    {:reply, :ok, %{state | views: updated_views}}
+  end
+
+  defp begin_view_mapping(bucket, %{following_process: follower}) do
+      spawn_link fn ->
+        stream_changes(bucket)
+          |> Stream.each(fn {:put, {key, value}} -> put(follower, key, value) end)
+          |> Stream.run
+      end
   end
 
   defp begin_view_mapping(bucket, %{view_name: view_name, mapping_function: mapping_function}) do
@@ -78,4 +100,7 @@ defmodule ProjectedBuckets.GenBucket do
   end
 
   defp update_view(bucket, view_name, {:put, {key, value}}), do: GenServer.call(bucket, {:put, {view_name, key, value}})
+
+  defp run_through_mapping_function(%{mapping_function: f}, key, value), do: f.({key, value})
+  defp run_through_mapping_function(_, key, value), do: {key, value}
 end
