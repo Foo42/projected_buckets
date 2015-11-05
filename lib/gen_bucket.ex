@@ -4,19 +4,19 @@ defmodule ProjectedBuckets.GenBucket do
 
   def start_link() do
     {:ok, change_streamer} = GenEvent.start_link
-    initial_state = %{views: %{__primary: %{data: %{}, changes: change_streamer}}}
+    initial_state = %{data: %{}, changes: change_streamer, following: %{}, views: %{}}
     GenServer.start_link __MODULE__, initial_state
   end
 
   def start_link(mapping_function) do
     {:ok, change_streamer} = GenEvent.start_link
-    initial_state = %{views: %{__primary: %{data: %{}, changes: change_streamer, mapping_function: mapping_function}}}
+    initial_state = %{data: %{}, following: %{}, changes: change_streamer, mapping_function: mapping_function, views: %{}}
     GenServer.start_link __MODULE__, initial_state
   end
 
-  def put(bucket, key, value) do
-    update_view(bucket, :__primary, {:put, {key, value}})
-  end
+  def follow(bucket, bucket_to_follow), do: GenServer.call(bucket, {:follow, bucket_to_follow})
+
+  def put(bucket, key, value), do: GenServer.call(bucket, {:put, {key, value}})
   def get(bucket, key), do: GenServer.call(bucket, {:get, key})
   def stream_changes(bucket), do: GenServer.call(bucket, {:get_change_stream})
   def install_view(bucket, view_name, mapping_function), do: GenServer.call(bucket, {:install_view, {view_name, mapping_function}})
@@ -28,78 +28,57 @@ defmodule ProjectedBuckets.GenBucket do
     {:ok, initial_state}
   end
 
-  def handle_call(command = {:put, {view_name, key, value}}, _from, state = %{views: views}) do
-    updated_views = case Map.get(views, view_name) do
-      nil -> views
-      view = %{changes: change_streamer} ->
-        {key, value} = run_through_mapping_function view, key, value
-        updated_views = views |> Map.put(view_name, %{view | data: Map.put(view.data, key, value) })
-        command = {:put, {key, value}}
-        change_streamer |> GenEvent.notify(command)
-        updated_views
-      view ->
-        views |> Map.put(view_name, %{view | data: Map.put(view.data, key, value) })
-    end
-    updated_state = %{state | views: updated_views}
+  def handle_call({:put, {key, value}}, _from, state = %{changes: change_streamer}) do
+    {key, value} = run_through_mapping_function state, key, value
+    command = {:put, {key, value}}
+    change_streamer |> GenEvent.notify(command)
+    updated_state = %{state | data: Map.put(state.data, key, value)}
     {:reply, :ok, updated_state}
   end
 
-  def handle_call({:get, key}, _from, state = %{views: %{__primary: %{data: data}}}) do
+  def handle_call({:get, key}, _from, state = %{data: data}) do
     {:reply, Map.get(data, key), state}
   end
 
   def handle_call({:get_using_view, {view_name, key}}, _from, state = %{views: views}) do
     value = case Map.get(views, view_name) do
       nil -> {:error, :unknown_view}
-      view -> Map.get(view.data, key)
+      %{following_process: view_bucket} -> get(view_bucket, key)
     end
     {:reply, value, state}
   end
 
-  def handle_call({:get_change_stream}, _from, state = %{views: views}) do
-    view_name = :__primary
-    case Map.get(views, view_name) do
-      nil -> :error
-      view = %{data: data, changes: change_streamer} ->
-        change_stream = GenEvent.stream(change_streamer)
-        original_data = data |> Enum.map(&{:put, &1})
-        stream = Stream.concat(original_data, change_stream)
-        {:reply, stream, state}
-    end
+  def handle_call({:get_change_stream}, _from, state = %{changes: change_streamer, data: data}) do
+    change_stream = GenEvent.stream(change_streamer)
+    original_data = data |> Enum.map(&{:put, &1})
+    stream = Stream.concat(original_data, change_stream)
+    {:reply, stream, state}
   end
 
-  def handle_call({:install_view, {view_name, mapping_function}}, _from, state = %{views: views}) when is_function(mapping_function) do
-    view = %{mapping_function: mapping_function, data: %{}}
-    updated_views = views |> Map.put(view_name, view)
-    begin_view_mapping(self(), view |> Map.put(:view_name, view_name))
-    {:reply, :ok, %{state | views: updated_views}}
+  def handle_call({:install_view, {view_name, mapping_function}}, from, state) when is_function(mapping_function) do
+    {:ok, follower} = start_link(mapping_function)
+    handle_call({:install_view, {view_name, follower}}, from, state)
   end
 
   def handle_call({:install_view, {view_name, follower}}, _from, state = %{views: views}) do
     view = %{following_process: follower}
     updated_views = views |> Map.put(view_name, view)
-    begin_view_mapping(self(), view |> Map.put(:view_name, view_name))
-    {:reply, :ok, %{state | views: updated_views}}
+    follow(follower, self())
+    {:reply, {:ok, follower}, %{state | views: updated_views}}
   end
 
-  defp begin_view_mapping(bucket, %{following_process: follower}) do
-      spawn_link fn ->
-        stream_changes(bucket)
-          |> Stream.each(fn {:put, {key, value}} -> put(follower, key, value) end)
-          |> Stream.run
-      end
-  end
-
-  defp begin_view_mapping(bucket, %{view_name: view_name, mapping_function: mapping_function}) do
+  def handle_call({:follow, target}, _from, state) do
+    follower = self()
+    Logger.info "#{inspect follower} starting to follow #{inspect target}"
     spawn_link fn ->
-      stream_changes(bucket)
-        |> Stream.map(fn {:put, key_value} -> {:put, mapping_function.(key_value)} end)
-        |> Stream.each(&update_view(bucket, view_name, &1))
+      stream_changes(target)
+        |> Stream.each(fn {:put, {key, value}} -> put(follower, key, value) end)
         |> Stream.run
     end
-  end
 
-  defp update_view(bucket, view_name, {:put, {key, value}}), do: GenServer.call(bucket, {:put, {view_name, key, value}})
+    #Probably, should monitor things we're following?? although the streams should just end?
+    {:reply, :ok, %{state | following: Map.put(state.following, target, target)}}
+  end
 
   defp run_through_mapping_function(%{mapping_function: f}, key, value), do: f.({key, value})
   defp run_through_mapping_function(_, key, value), do: {key, value}

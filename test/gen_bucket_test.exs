@@ -3,7 +3,7 @@ defmodule ProjectedBuckets.GenBucketTests  do
     alias ProjectedBuckets.GenBucket
 
     test "bucket process starts with start_link" do
-      assert {:ok, pid} = GenBucket.start_link
+      assert {:ok, _pid} = GenBucket.start_link
     end
 
     test "values can be put and retrieved" do
@@ -60,5 +60,6 @@ defmodule ProjectedBuckets.GenBucketTests  do
       :timer.sleep(50)
       assert GenBucket.get(view_bucket, "foo") == 84, "values inserted after view should be mapped, and accessable in view bucket"
       assert GenBucket.get(view_bucket, "old") == 2, "original values should be mapped and accessable in view bucket" #Tricky to do without there being a gap between getting full content and starting update stream
+      assert GenBucket.get(master, "doubled", "foo") === 84, "values in view can be accessed via original bucket using view name"
     end
 end
