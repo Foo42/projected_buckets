@@ -44,6 +44,17 @@ defmodule ProjectedBuckets.GenBucketTests  do
       assert GenBucket.get(bucket, "doubled", "old") == 2, "original values should be mapped" #Tricky to do without there being a gap between getting full content and starting update stream
     end
 
+    test "mapping function can return of a list of key value tuples which will be flattened out" do
+      {:ok, bucket} = GenBucket.start_link
+      uppercaser = fn {key,value} -> [{String.downcase(key),value},{String.upcase(key), value}] end
+      GenBucket.install_view(bucket, "more_cases", uppercaser)
+      :timer.sleep(50)
+      GenBucket.put(bucket, "foo", 42)
+      :timer.sleep(50)
+      assert GenBucket.get(bucket, "more_cases", "foo") == 42
+      assert GenBucket.get(bucket, "more_cases", "FOO") == 42
+    end
+
 
     test "can install a another bucket process as a view" do
       {:ok, master} = GenBucket.start_link

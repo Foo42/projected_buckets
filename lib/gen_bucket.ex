@@ -29,10 +29,12 @@ defmodule ProjectedBuckets.GenBucket do
   end
 
   def handle_call({:put, {key, value}}, _from, state = %{changes: change_streamer}) do
-    {key, value} = run_through_mapping_function state, key, value
-    command = {:put, {key, value}}
-    change_streamer |> GenEvent.notify(command)
-    updated_state = %{state | data: Map.put(state.data, key, value)}
+    commands = run_through_mapping_function(state,key,value) |> Enum.map(&{:put, &1})
+
+    commands |> Enum.each &GenEvent.notify(change_streamer,&1)
+
+    updated_data = commands |> Enum.reduce state.data, &process_command/2
+    updated_state = %{state | data: updated_data}
     {:reply, :ok, updated_state}
   end
 
@@ -69,7 +71,6 @@ defmodule ProjectedBuckets.GenBucket do
 
   def handle_call({:follow, target}, _from, state) do
     follower = self()
-    Logger.info "#{inspect follower} starting to follow #{inspect target}"
     spawn_link fn ->
       stream_changes(target)
         |> Stream.each(fn {:put, {key, value}} -> put(follower, key, value) end)
@@ -80,6 +81,10 @@ defmodule ProjectedBuckets.GenBucket do
     {:reply, :ok, %{state | following: Map.put(state.following, target, target)}}
   end
 
-  defp run_through_mapping_function(%{mapping_function: f}, key, value), do: f.({key, value})
-  defp run_through_mapping_function(_, key, value), do: {key, value}
+  defp run_through_mapping_function(%{mapping_function: f}, key, value), do: f.({key, value}) |> ensure_list
+  defp run_through_mapping_function(_, key, value), do: {key, value} |> ensure_list
+  defp ensure_list(input) when is_list(input), do: input
+  defp ensure_list(input), do: [input]
+  defp process_command({:put, {key,value}}, data), do: Map.put(data, key,value)
+
 end

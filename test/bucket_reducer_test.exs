@@ -13,12 +13,6 @@ defmodule ProjectedBuckets.BucketReducerTests  do
       GenBucket.put bucket, "b", 4
 
       :timer.sleep(50)
-      IO.puts "reducer is alive? #{Process.alive? reducer}"
       assert reducer |> GenBucketReducer.value == 6
     end
-
-    #How should reductions be done? as part of a bucket view, or completely seperate?
-    # If it is done as part of bucket view it makes sense in one way, because then the resulting reduced view can be queried
-    # What makes most sense in the planned use case. We will have a single view with a single reduction which produces a single value
-    # In that case a wrapping reducer which turns
 end
